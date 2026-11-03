@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gillersja1/DevtestLike/actions/workflows/ci.yml/badge.svg)](https://github.com/gillersja1/DevtestLike/actions/workflows/ci.yml)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
-![Tests](https://img.shields.io/badge/tests-30%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)
 
 **Enterprise test automation in the style of Broadcom DevTest**, built in C# with open tools: authentication,
 XML-based orchestration and database validations across interconnected systems, with an unreliable
@@ -18,6 +18,7 @@ own terms in the [glossary](#devtest-glossary).
 - **Two layers of authentication**: an **OAuth2** token from a real **Keycloak**, plus a **WS-Security UsernameToken** inside the SOAP header.
 - **Database validations** against a real **Postgres**, checking what was actually written, not just what the service said.
 - **Service virtualization** with WireMock.Net: request matching by XPath, outages, timeouts, garbage replies and a stateful restart, on demand.
+- **Messaging**: issuing a policy publishes an XML event on **ActiveMQ**, consumed by the tests through NMS (.NET's JMS) with a correlation-id selector.
 - **Data-driven tests** from a CSV data set.
 - **Everything starts automatically** (Testcontainers). The only things to install are Docker and the .NET SDK. 30 tests run in seconds, on every push.
 
@@ -44,6 +45,8 @@ flowchart LR
     P -. "validates the token" .-> K
     P -- "SOAP/XML" --> R["Rating engine<br/>(third party, virtualized<br/>with WireMock.Net)"]
     P -- "SQL" --> D[("Postgres<br/>quotes, policies")]
+    P -- "PolicyIssued (XML)" --> Q[["ActiveMQ Artemis<br/>policy.issued queue"]]
+    T -. "consume (NMS / JMS)" .-> Q
     T -. "database validations" .-> D
 ```
 
@@ -53,6 +56,7 @@ flowchart LR
 | **Rating engine** | Someone else's SOAP service, which scores the risk and sets a base rate | A **virtual service** (WireMock.Net) |
 | **Keycloak** | The identity provider. It has two clients: `policy-client`, which may call the service, and `reporting-client`, which may not. | Real, in Docker, with a realm imported from JSON |
 | **Postgres** | The system of record (`quotes`, `policies`) | Real, in Docker, queried directly by the tests |
+| **ActiveMQ Artemis** | The message broker. Issuing a policy publishes a `PolicyIssued` XML message (contract: `contracts/events.xsd`) for downstream systems | Real, in Docker, consumed through NMS |
 
 **Business rules** (what the tests verify):
 - premium = base rate × (1 + risk score / 100), rounded to cents;
@@ -125,13 +129,14 @@ Assert.That(read.Value("//p:holderName"), Is.EqualTo(holder));
 
 ## What the tests cover
 
-**30 tests in four suites.**
+**33 tests in five suites.**
 
 | Suite | Tests | What it checks |
 |---|---|---|
 | [`QuoteToPolicyWorkflowTests`](tests/DevtestLike.Tests/QuoteToPolicyWorkflowTests.cs) | 6 | **XML orchestration**: quote, bind and read back; a quote can only be bound once; declined quotes can't be bound; quotes expire (time is moved forward with a fake clock); unknown ids, malformed XML and unknown operations are faults. Every reply is checked against the XSD, and the database after each step. |
 | [`AuthenticationTests`](tests/DevtestLike.Tests/AuthenticationTests.cs) | 8 | **Both layers**: no token (401), a forged token (401), a real token for the wrong application (403), a wrong client secret (Keycloak refuses to issue a token), a missing or wrong WS-Security UsernameToken (SOAP fault), and that a refused call writes nothing and never reaches the rating engine. |
 | [`VirtualServiceTests`](tests/DevtestLike.Tests/VirtualServiceTests.cs) | 5 | **Service virtualization**: what goes over the wire to the rating engine, and what doesn't (the applicant's name stays private); an outage, a timeout and a garbage reply each become `soap:Server` faults with nothing saved; a stateful virtual service that's down once, then back. |
+| [`MessagingTests`](tests/DevtestLike.Tests/MessagingTests.cs) | 3 | **Messaging**: issuing a policy publishes one `PolicyIssued` message, checked against `events.xsd` and matched to the SOAP reply and the database; a refused second bind publishes nothing more; a broker outage doesn't fail the request (the policy is committed first). |
 | [`DataDrivenQuoteTests`](tests/DevtestLike.Tests/DataDrivenQuoteTests.cs) | 11 | **A CSV data set** ([`applicants.csv`](tests/DevtestLike.Tests/DataSets/applicants.csv)): one test per row across the age bands, premiums and the decline rule, checked in the reply and the database. Invalid ages are rejected before the rating engine is called. Adding a scenario means adding a row. |
 
 ## How authentication works
@@ -155,7 +160,7 @@ sequenceDiagram
 
 ## Run it
 
-You need **Docker** (Docker Desktop on Windows or macOS) and the **.NET 10 SDK**.
+You need **Docker** (Docker Desktop on Windows or macOS) and the **.NET 10 SDK**. Postgres, Keycloak and ActiveMQ all start in containers.
 
 ```bash
 git clone https://github.com/gillersja1/DevtestLike
@@ -205,6 +210,7 @@ tests/DevtestLike.Tests/
 | XML XPath filter (save a value into a property) | `reply.Value("//p:quoteId")`, which feeds the next step |
 | Assertions (XML XPath, XML validation) | NUnit assertions on XPath values; `ConformsToContract()` validates against the XSD |
 | JDBC step and result-set assertions | [`Db.cs`](tests/DevtestLike.Tests/Environment/Db.cs), which queries Postgres directly |
+| JMS step (consume, selector, assertions) | [`Broker.cs`](tests/DevtestLike.Tests/Environment/Broker.cs): NMS consumer with a `JMSCorrelationID` selector |
 | Data set (CSV) | [`applicants.csv`](tests/DevtestLike.Tests/DataSets/applicants.csv) with NUnit's `TestCaseSource` |
 | Config and test environment | [`Enterprise.cs`](tests/DevtestLike.Tests/Environment/Enterprise.cs), which starts and wires every system |
 | Staging documents and test suites run in CI | GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)); results also go to Grafana |
@@ -219,7 +225,6 @@ tests/DevtestLike.Tests/
 
 ## Roadmap
 
-- **Message queue step**: the policy service publishes a "policy issued" event to ActiveMQ, and a test consumes it, like a DevTest JMS step.
 - **SAML** sign-in through Keycloak, alongside OAuth2.
 - **Record and playback**: proxy a live service through WireMock, record the traffic, and replay it as a virtual service, the way DevTest builds a VSI from recorded traffic.
 - Test results on the [Grafana dashboard](https://github.com/gillersja1/test-results-otel), alongside the other projects in this portfolio.
