@@ -1,0 +1,14 @@
+name,age,vehicleValue,state,expectedStatus,expectedRiskScore,expectedPremium
+# Under 25: risk 45 on a 520.00 base rate (520.00 x 1.45)
+Teen Driver,18,9000,OH,offered,45,754.00
+Young Driver,24,15000,CA,offered,45,754.00
+# 25 to 64: risk 20 on 500.00 (500.00 x 1.20)
+First Adult,25,22000,NY,offered,20,600.00
+Middle Age,47,38000,TX,offered,20,600.00
+Just Under 65,64,30000,FL,offered,20,600.00
+# 65 to 74: risk 30 on 480.00 (480.00 x 1.30)
+Retiree,65,27000,AZ,offered,30,624.00
+Late Retiree,74,21000,WA,offered,30,624.00
+# 75 and over: risk 85, which is 80 or more, so declined
+Senior Driver,75,18000,OH,declined,85,0.00
+Centenarian,100,12000,ME,declined,85,0.00
