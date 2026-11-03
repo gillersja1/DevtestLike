@@ -12,6 +12,15 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(config.GetConnectionString("Policies")
     ?? throw new InvalidOperationException("Set ConnectionStrings:Policies.")));
 builder.Services.AddSingleton<PolicyStore>();
+// Messaging:BrokerUri (e.g. activemq:tcp://broker:61616) turns on the PolicyIssued events; without it they're skipped.
+if (string.IsNullOrEmpty(config["Messaging:BrokerUri"]))
+{
+    builder.Services.AddSingleton<IPolicyEvents, NoPolicyEvents>();
+}
+else
+{
+    builder.Services.AddSingleton<IPolicyEvents, ActiveMqPolicyEvents>();
+}
 builder.Services.AddHttpClient<RatingClient>(http =>
 {
     http.BaseAddress = new Uri(config["RatingEngine:Url"] ?? throw new InvalidOperationException("Set RatingEngine:Url."));
@@ -37,7 +46,8 @@ app.UseAuthorization();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-app.MapPost("/soap/policy", async (HttpRequest request, PolicyStore store, RatingClient rating, TimeProvider clock, CancellationToken ct) =>
+app.MapPost("/soap/policy", async (HttpRequest request, PolicyStore store, RatingClient rating, IPolicyEvents events, TimeProvider clock,
+    CancellationToken ct) =>
 {
     XDocument envelope;
     try
@@ -111,6 +121,11 @@ app.MapPost("/soap/policy", async (HttpRequest request, PolicyStore store, Ratin
             return Soap.Xml(Soap.Fault(client: true, "quoteId must be a quote's id.", "InvalidRequest"), 500);
         }
         var (outcome, policy) = await store.IssueAsync(quoteId, clock.GetUtcNow(), ct);
+        if (outcome == PolicyStore.IssueOutcome.Issued)
+        {
+            // After the commit, so a message never announces a policy that was rolled back.
+            await events.PolicyIssuedAsync(policy!, ct);
+        }
         return outcome switch
         {
             PolicyStore.IssueOutcome.Issued => Soap.Xml(Soap.Envelope(new XElement(Soap.Policy + "IssuePolicyResponse",
