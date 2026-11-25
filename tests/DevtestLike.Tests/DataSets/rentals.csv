@@ -1,0 +1,19 @@
+name,age,carClass,hours,expectedStatus,expectedCode,expectedDays,expectedTotal
+# Standard rates per started day: economy 45, midsize 60, suv 85, luxury 140
+Rate Economy,40,economy,24,201,,1,45.00
+Rate Midsize,40,midsize,72,201,,3,180.00
+Rate Suv,40,suv,168,201,,7,595.00
+Rate Luxury,40,luxury,48,201,,2,280.00
+# A started day counts: 25 hours is 2 days
+Late Return,40,economy,25,201,,2,90.00
+# 21 to 24 pay a young driver fee of 25.00 a day
+Young Yuri,21,economy,48,201,,2,140.00
+Young Yan,24,suv,24,201,,1,110.00
+# 25 is the first age without the fee
+Grown Gus,25,economy,48,201,,2,90.00
+# Under 21 can't rent at all, and luxury needs 25 or over
+Too Young Tia,20,economy,24,422,DriverTooYoung,,
+Luxury Lou,24,luxury,24,422,DriverTooYoung,,
+# At most 30 days
+Long Lena,40,economy,744,422,TooLong,,
+Exact Month,40,economy,720,201,,30,1350.00

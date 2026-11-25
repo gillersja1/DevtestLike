@@ -15,6 +15,17 @@
       "directAccessGrantsEnabled": false
     },
     {
+      "clientId": "counter-client",
+      "name": "Branch counter app (allowed to call the reservations API)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "counter-client-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    },
+    {
       "clientId": "reporting-client",
       "name": "Reporting job (a real client, but not allowed to call the policy service)",
       "enabled": true,

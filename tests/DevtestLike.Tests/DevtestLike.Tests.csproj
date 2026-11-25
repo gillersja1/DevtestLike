@@ -29,6 +29,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PolicyService\PolicyService.csproj" />
+    <!-- Aliased: both services have a top-level Program, and the tests' Program means the policy service's. -->
+    <ProjectReference Include="..\..\src\RentalService\RentalService.csproj" Aliases="rental" />
   </ItemGroup>
 
   <ItemGroup>

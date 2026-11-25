@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gillersja1/DevtestLike/actions/workflows/ci.yml/badge.svg)](https://github.com/gillersja1/DevtestLike/actions/workflows/ci.yml)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
-![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-60%20passing-brightgreen)
 
 **Enterprise test automation in the style of Broadcom DevTest**, built in C# with open tools: authentication,
 XML-based orchestration and database validations across interconnected systems, with an unreliable
@@ -20,13 +20,15 @@ own terms in the [glossary](#devtest-glossary).
 - **Service virtualization** with WireMock.Net: request matching by XPath, outages, timeouts, garbage replies and a stateful restart, on demand.
 - **Messaging**: issuing a policy publishes an XML event on **ActiveMQ**, consumed by the tests through NMS (.NET's JMS) with a correlation-id selector.
 - **Data-driven tests** from a CSV data set.
-- **Everything starts automatically** (Testcontainers). The only things to install are Docker and the .NET SDK. 30 tests run in seconds, on every push.
+- A second system, a **car rental counter** with a **REST/JSON** API, calling two outside companies (licence checks and payments) that are both **virtual services matched on JSON**. See [The rental counter](#the-rental-counter).
+- **Everything starts automatically** (Testcontainers). The only things to install are Docker and the .NET SDK. 60 tests run in seconds, on every push.
 
 ## Contents
 
 - [The systems under test](#the-systems-under-test)
 - [A workflow, end to end](#a-workflow-end-to-end)
 - [What the tests cover](#what-the-tests-cover)
+- [The rental counter](#the-rental-counter)
 - [How authentication works](#how-authentication-works)
 - [Run it](#run-it)
 - [Project layout](#project-layout)
@@ -129,7 +131,7 @@ Assert.That(read.Value("//p:holderName"), Is.EqualTo(holder));
 
 ## What the tests cover
 
-**33 tests in five suites.**
+**34 tests in six suites** on the insurance side (record and playback included); the rental counter's are [below](#the-rental-counter).
 
 | Suite | Tests | What it checks |
 |---|---|---|
@@ -138,6 +140,41 @@ Assert.That(read.Value("//p:holderName"), Is.EqualTo(holder));
 | [`VirtualServiceTests`](tests/DevtestLike.Tests/VirtualServiceTests.cs) | 5 | **Service virtualization**: what goes over the wire to the rating engine, and what doesn't (the applicant's name stays private); an outage, a timeout and a garbage reply each become `soap:Server` faults with nothing saved; a stateful virtual service that's down once, then back. |
 | [`MessagingTests`](tests/DevtestLike.Tests/MessagingTests.cs) | 3 | **Messaging**: issuing a policy publishes one `PolicyIssued` message, checked against `events.xsd` and matched to the SOAP reply and the database; a refused second bind publishes nothing more; a broker outage doesn't fail the request (the policy is committed first). |
 | [`DataDrivenQuoteTests`](tests/DevtestLike.Tests/DataDrivenQuoteTests.cs) | 11 | **A CSV data set** ([`applicants.csv`](tests/DevtestLike.Tests/DataSets/applicants.csv)): one test per row across the age bands, premiums and the decline rule, checked in the reply and the database. Invalid ages are rejected before the rating engine is called. Adding a scenario means adding a row. |
+
+## The rental counter
+
+The same enterprise, a different business: a branch counter booking cars. Unlike the SOAP policy service, the
+reservations API (`src/RentalService`) is REST and JSON, which is what most newer systems look like.
+
+```mermaid
+flowchart LR
+    T["Tests<br/>(the branch counter app)"] -- "REST/JSON<br/>OAuth2 token" --> R["Reservations API<br/>(ASP.NET)"]
+    R -- "REST/JSON" --> L["Licence-check company<br/>(virtualized)"]
+    R -- "REST/JSON" --> P["Payment company<br/>(virtualized)"]
+    R -- "SQL" --> D[("Postgres<br/>reservations")]
+    R -- "ReservationConfirmed /<br/>ReservationCancelled (JSON)" --> Q[["ActiveMQ<br/>reservation.events"]]
+```
+
+Booking a car (`POST /api/reservations`) prices it, checks the driver's licence, holds the total on the card,
+then saves the reservation and announces it. Any refusal or outage before the save leaves nothing behind: no
+reservation and no money held. `GET /api/reservations/{number}` reads one back; `POST .../cancel` releases the
+hold first, and if the payment company is down the reservation stays confirmed. Errors are problem-details JSON
+with a `code`, such as `LicenseNotValid` (422), `PaymentDeclined` (402) or `PaymentUnavailable` (503).
+
+**Rules:** each started day is charged (25 hours is 2 days) at economy 45.00, midsize 60.00, suv 85.00 or luxury
+140.00. Drivers must be 21; drivers aged 21 to 24 pay 25.00 a day extra; luxury needs 25 or over; at most 30 days.
+
+**The virtual services** ([`RentalVendors.cs`](tests/DevtestLike.Tests/Environment/RentalVendors.cs)) match on the
+request's JSON with JMESPath: licence numbers starting `SUS` are suspended and `EXP` expired; card tokens starting
+`tok_declined` are declined. Response templating gives every hold a new authorization id. On demand they go down,
+go slow, or fail only on voids.
+
+| Suite | Tests | What it checks |
+|---|---|---|
+| [`ReservationWorkflowTests`](tests/DevtestLike.Tests/Rentals/ReservationWorkflowTests.cs) | 4 | Book, read back and cancel, chained by the confirmation number. Each step is checked in the reply, the database, the payment company's request log (the right amount held, then voided) and the broker. A reservation cancels only once; a payment outage leaves it confirmed. |
+| [`VendorTests`](tests/DevtestLike.Tests/Rentals/VendorTests.cs) | 6 | A suspended or expired licence is refused before any money is held; a declined card books nothing; licence-check and payment outages are 503s that save nothing; a slow licence check times out instead of hanging the counter. |
+| [`DataDrivenRentalTests`](tests/DevtestLike.Tests/Rentals/DataDrivenRentalTests.cs) | 13 | One test per row of [`rentals.csv`](tests/DevtestLike.Tests/DataSets/rentals.csv): every car class, the started-day rule, the young driver fee, the age limits and the 30-day limit. |
+| [`RentalAuthenticationTests`](tests/DevtestLike.Tests/Rentals/RentalAuthenticationTests.cs) | 3 | No token is a 401; real tokens for other applications (reporting, the agency portal) are 403s that book nothing and call no outside company. |
 
 ## How authentication works
 
@@ -188,6 +225,11 @@ src/PolicyService/
   Soap.cs                             envelopes and faults
   RatingClient.cs                     calls the rating engine; timeouts and bad replies become errors
   PolicyStore.cs                      Postgres: schema, quotes, the bind transaction
+src/RentalService/
+  Program.cs                          the reservations API: book, read back, cancel
+  Pricing.cs                          the rental rules
+  Vendors.cs                          the licence-check and payment companies' APIs
+  RentalStore.cs, RentalEvents.cs     Postgres and ActiveMQ
 tests/DevtestLike.Tests/
   Environment/Enterprise.cs           starts Postgres + Keycloak + the virtual service, hosts the policy service
   Environment/RatingEngine.cs         the virtual service: XPath rules, faults, delays, stateful scenario
@@ -212,6 +254,9 @@ tests/DevtestLike.Tests/
 | JDBC step and result-set assertions | [`Db.cs`](tests/DevtestLike.Tests/Environment/Db.cs), which queries Postgres directly |
 | JMS step (consume, selector, assertions) | [`Broker.cs`](tests/DevtestLike.Tests/Environment/Broker.cs): NMS consumer with a `JMSCorrelationID` selector |
 | Data set (CSV) | [`applicants.csv`](tests/DevtestLike.Tests/DataSets/applicants.csv) with NUnit's `TestCaseSource` |
+| REST step, JSON Path filter and assertion | `RentalCaller.BookAsync(...)`, `reply.Value("$.confirmationNumber")` and NUnit assertions on it |
+| Request data matching in a JSON service image | `JmesPathMatcher` rules in `RentalVendors.cs` |
+| Dynamic values in responses (DevTest's magic strings and magic dates) | WireMock response templating, e.g. a new id per hold with `{{Random Type="Guid"}}` |
 | Config and test environment | [`Enterprise.cs`](tests/DevtestLike.Tests/Environment/Enterprise.cs), which starts and wires every system |
 | Staging documents and test suites run in CI | GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)); results also go to Grafana |
 
@@ -226,5 +271,4 @@ tests/DevtestLike.Tests/
 ## Roadmap
 
 - **SAML** sign-in through Keycloak, alongside OAuth2.
-- **Record and playback**: proxy a live service through WireMock, record the traffic, and replay it as a virtual service, the way DevTest builds a VSI from recorded traffic.
 - Test results on the [Grafana dashboard](https://github.com/gillersja1/test-results-otel), alongside the other projects in this portfolio.
