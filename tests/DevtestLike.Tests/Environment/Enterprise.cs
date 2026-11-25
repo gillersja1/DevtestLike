@@ -1,3 +1,5 @@
+extern alias rental;
+
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,6 +36,11 @@ public sealed class Enterprise
 
     public static RatingEngine RatingEngine { get; private set; } = null!;
     public static WebApplicationFactory<Program> PolicyService { get; private set; } = null!;
+
+    /// <summary>The rental side: two outside companies, virtualized, and the reservations API.</summary>
+    public static LicenseCheckService LicenseCheck { get; private set; } = null!;
+    public static PaymentService Payments { get; private set; } = null!;
+    public static WebApplicationFactory<rental::RentalService.RentalApp> Reservations { get; private set; } = null!;
     public static NpgsqlDataSource Database { get; private set; } = null!;
     public static string TokenEndpoint => $"{keycloak.GetBaseAddress().TrimEnd('/')}/realms/{Realm}/protocol/openid-connect/token";
 
@@ -56,7 +63,31 @@ public sealed class Enterprise
         RatingEngine = RatingEngine.Start();
         Database = NpgsqlDataSource.Create(postgres.GetConnectionString());
         PolicyService = Host(new FakeTimeProvider(DateTimeOffset.UtcNow));
+
+        LicenseCheck = new LicenseCheckService().WithStandardRules();
+        Payments = new PaymentService().WithStandardRules();
+        Reservations = RentalHost(new FakeTimeProvider(RentalClock));
     }
+
+    /// <summary>The rental tests' "now": fixed, so pickup dates and prices are the same every run.</summary>
+    public static readonly DateTimeOffset RentalClock = new(2026, 12, 14, 9, 0, 0, TimeSpan.Zero);
+
+    /// <summary>The reservations API, wired to the environment and the virtual licence and payment companies.</summary>
+    public static WebApplicationFactory<rental::RentalService.RentalApp> RentalHost(TimeProvider clock, double vendorTimeoutSeconds = 2) =>
+        new WebApplicationFactory<rental::RentalService.RentalApp>().WithWebHostBuilder(web =>
+        {
+            web.UseSetting("ConnectionStrings:Rentals", postgres.GetConnectionString());
+            web.UseSetting("LicenseCheck:Url", LicenseCheck.Url);
+            web.UseSetting("Payments:Url", Payments.Url);
+            web.UseSetting("Vendors:TimeoutSeconds", vendorTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            web.UseSetting("Auth:Authority", $"{keycloak.GetBaseAddress().TrimEnd('/')}/realms/{Realm}");
+            web.UseSetting("Auth:RequireHttps", "false");
+            web.UseSetting("Auth:AllowedClients", "counter-client");
+            web.UseSetting("Messaging:BrokerUri", BrokerUri);
+            web.UseSetting("Messaging:Username", BrokerUser);
+            web.UseSetting("Messaging:Password", BrokerPassword);
+            web.ConfigureServices(services => services.AddSingleton(clock));
+        });
 
     /// <summary>
     /// The policy service, wired to the environment. Tests that need to move the clock (expiring quotes) host
@@ -85,6 +116,9 @@ public sealed class Enterprise
     {
         await PolicyService.DisposeAsync();
         RatingEngine.Dispose();
+        await Reservations.DisposeAsync();
+        LicenseCheck.Dispose();
+        Payments.Dispose();
         await Database.DisposeAsync();
         await postgres.DisposeAsync();
         await keycloak.DisposeAsync();
